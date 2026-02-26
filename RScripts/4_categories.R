@@ -1,6 +1,5 @@
 ## ============================================================
-## 4_categories.R — UpSet plots + MYC category classification
-## Works for both gene and isoform levels
+## 4_categories.R — UpSet plots + category classification
 ## ============================================================
 
 suppressPackageStartupMessages({
@@ -9,20 +8,7 @@ suppressPackageStartupMessages({
 })
 
 ## ---------------- Parameters ----------------
-analysis_level <- "gene"  # choose: "gene" or "isoform"
-
-## ---------------- Directories ----------------
-base_root <- getwd()
-
-de_tbl   <- file.path(base_root, "results/1_DEAnalysis/tables/shrunk")
-int_tbl  <- file.path(base_root, "results/2_interaction/tables")
-out_tbl  <- file.path(base_root, "results/4_categories/tables")
-out_fig  <- file.path(base_root, "results/4_categories/figures")
-dir.create(out_tbl, recursive = TRUE, showWarnings = FALSE)
-dir.create(out_fig, recursive = TRUE, showWarnings = FALSE)
-
-## ---------------- Drugs ----------------
-drugs <- c("11j", "KVS", "11j_PlaB", "KVS_PlaB", "PlaB")
+analysis_level <- "gene"  # "gene" or "isoform"
 
 ## ---------------- Helper functions ----------------
 strip_version <- function(x) sub("\\..*$", "", x)
@@ -39,10 +25,33 @@ load_id_table <- function(file, analysis_level) {
     if (!all(c("isoform_id", "gene_id") %in% names(df))) return(data.frame())
     df <- df %>% dplyr::select(isoform_id, gene_id) %>% distinct()
     df$isoform_id <- strip_version(df$isoform_id)
-    df$gene_id <- strip_version(df$gene_id)
+    df$gene_id    <- strip_version(df$gene_id)
   }
-  return(df)
+  df
 }
+
+## ---------------- Directories ----------------
+base_root <- getwd()
+
+de_tbl   <- file.path(base_root, "results/1_DEAnalysis/tables/shrunk")
+int_tbl  <- file.path(base_root, "results/2_interaction/tables")
+out_tbl  <- file.path(base_root, "results/4_categories/tables")
+out_fig  <- file.path(base_root, "results/4_categories/figures")
+dir.create(out_tbl, recursive = TRUE, showWarnings = FALSE)
+dir.create(out_fig, recursive = TRUE, showWarnings = FALSE)
+
+## ---------------- Annotation map: gene_id -> SYMBOL ----------------
+annotation <- read.delim(file.path(base_root, "data", "annotation.txt"), check.names = FALSE)
+sym_col <- if ("symbol" %in% names(annotation)) "symbol" else if ("gene_name" %in% names(annotation)) "gene_name" else NA
+if (is.na(sym_col)) stop("annotation.txt must have symbol or gene_name column.")
+
+gene2sym <- annotation %>%
+  dplyr::select(gene_id, SYMBOL = all_of(sym_col)) %>%
+  dplyr::mutate(gene_id = strip_version(gene_id)) %>%
+  dplyr::distinct(gene_id, .keep_all = TRUE)
+
+## ---------------- Drugs ----------------
+drugs <- c("11j", "KVS", "11j_PlaB", "KVS_PlaB", "PlaB")
 
 ## ============================================================
 ## PART 1 — UpSet plots
@@ -51,7 +60,6 @@ load_id_table <- function(file, analysis_level) {
 for (drug in drugs) {
   message(">>> [UpSet] Processing: ", drug)
   
-  # --- Load sets ---
   up_drug       <- load_id_table(file.path(de_tbl,  paste0("up_",   drug, ".tsv")), analysis_level)
   up_drug_OHT   <- load_id_table(file.path(de_tbl,  paste0("up_",   drug, "_OHT.tsv")), analysis_level)
   down_drug     <- load_id_table(file.path(de_tbl,  paste0("down_", drug, ".tsv")), analysis_level)
@@ -59,13 +67,11 @@ for (drug in drugs) {
   up_int        <- load_id_table(file.path(int_tbl, paste0("up_int_",   drug, ".tsv")), analysis_level)
   down_int      <- load_id_table(file.path(int_tbl, paste0("down_int_", drug, ".tsv")), analysis_level)
   
-  ## --- Build combined data frame explicitly ---
   if (analysis_level == "gene") {
     all_ids <- unique(na.omit(c(
       up_drug$gene_id, up_drug_OHT$gene_id, down_drug$gene_id, down_drug_OHT$gene_id,
       up_int$gene_id, down_int$gene_id
     )))
-    
     if (length(all_ids) == 0) {
       message("  [skip] No genes found for ", drug)
       next
@@ -81,21 +87,18 @@ for (drug in drugs) {
     upset_df[[paste0("up_int_", drug)]]       <- ref_col %in% up_int$gene_id
     upset_df[[paste0("down_int_", drug)]]     <- ref_col %in% down_int$gene_id
     
-  } else if (analysis_level == "isoform") {
+  } else {
     all_iso <- unique(na.omit(c(
       up_drug$isoform_id, up_drug_OHT$isoform_id, down_drug$isoform_id, down_drug_OHT$isoform_id,
       up_int$isoform_id, down_int$isoform_id
     )))
-    
     if (length(all_iso) == 0) {
       message("  [skip] No isoforms found for ", drug)
       next
     }
     
-    # Map isoform_id -> gene_id from all sets
-    map_df <- bind_rows(
-      up_drug, up_drug_OHT, down_drug, down_drug_OHT, up_int, down_int
-    ) %>% distinct(isoform_id, gene_id)
+    map_df <- bind_rows(up_drug, up_drug_OHT, down_drug, down_drug_OHT, up_int, down_int) %>%
+      distinct(isoform_id, gene_id)
     
     upset_df <- tibble(isoform_id = all_iso) %>%
       left_join(map_df, by = "isoform_id")
@@ -110,21 +113,19 @@ for (drug in drugs) {
     upset_df[[paste0("down_int_", drug)]]     <- ref_col %in% down_int$isoform_id
   }
   
-  ## --- Save table ---
   write.table(
     upset_df,
     file.path(out_tbl, paste0("upset_data_", drug, ".tsv")),
     sep = "\t", quote = FALSE, row.names = FALSE
   )
   
-  ## --- Draw UpSet plot ---
   sets <- setdiff(names(upset_df), c("gene_id", "isoform_id"))
   
   p <- upset(
     upset_df,
     intersect = sets,
     base_annotations = list(
-      'Intersection size' = intersection_size(counts = TRUE, text = list(size = 3.5))
+      "Intersection size" = intersection_size(counts = TRUE, text = list(size = 3.5))
     ),
     set_sizes = upset_set_size(),
     width_ratio = 0.3,
@@ -137,7 +138,7 @@ for (drug in drugs) {
 message("\n>>> Part 1 complete: UpSet plots and tables saved.\n")
 
 ## ============================================================
-## PART 2 — MYC Category Detection
+## PART 2 — Category detection + save IDs + SYMBOL
 ## ============================================================
 
 for (drug in drugs) {
@@ -157,47 +158,65 @@ for (drug in drugs) {
   up_int     <- paste0("up_int_", drug)
   down_int   <- paste0("down_int_", drug)
   
-  # Safe accessor
   has_col <- function(x) if (x %in% names(df)) df[[x]] else rep(FALSE, nrow(df))
   U1 <- has_col(up_noOHT); U2 <- has_col(up_OHT)
   D1 <- has_col(down_noOHT); D2 <- has_col(down_OHT)
   UI <- has_col(up_int); DI <- has_col(down_int)
   
-  # Classification
   category <- rep(NA_character_, nrow(df))
-  category[(U1 & U2 & UI) | (!U1 & U2 & UI)] <- "MYC_enhanced_up"
-  category[(D1 & D2 & DI) | (!D1 & D2 & DI)] <- "MYC_enhanced_down"
-  category[(U1 & U2 & DI) | (U1 & !U2 & DI)] <- "MYC_suppressed_up"
-  category[(D1 & D2 & UI) | (D1 & !D2 & UI)] <- "MYC_suppressed_down"
-  category[(D1 & U2 & UI)]                   <- "Switched_increase"
-  category[(U1 & D2 & DI)]                   <- "Switched_decrease"
+  
+  ## enhanced (previously amplified)
+  category[(U1 & U2 & UI) | (!U1 & U2 & UI)] <- "enhanced_up"
+  category[(D1 & D2 & DI) | (!D1 & D2 & DI)] <- "enhanced_down"
+  
+  ## suppressed (previously buffered)
+  category[(U1 & U2 & DI) | (U1 & !U2 & DI)] <- "suppressed_up"
+  category[(D1 & D2 & UI) | (D1 & !D2 & UI)] <- "suppressed_down"
+  
+  ## switched
+  category[(D1 & U2 & UI)] <- "switched_positive"
+  category[(U1 & D2 & DI)] <- "switched_negative"
+  
+  ## independent (same direction, no interaction dominance)
+  is_unassigned <- is.na(category)
+  category[is_unassigned & (U1 & U2)] <- "independent_up"
+  category[is_unassigned & (D1 & D2)] <- "independent_down"
   
   df$category <- category
   
+  ## Drop unclassified rows (optional but recommended)
+  df2 <- df[!is.na(df$category), , drop = FALSE]
+  if (nrow(df2) == 0) next
   
-  ## --- Save per category ---
-  cat_list <- split(df, df$category)
+  cat_list <- split(df2, df2$category)
+  
   for (nm in names(cat_list)) {
-    sub <- cat_list[[nm]]
+    subdf <- cat_list[[nm]]
+    if (is.null(subdf) || nrow(subdf) == 0) next
     
-    # If the subset is a data frame → keep gene_id/isoform_id
-    if (is.data.frame(sub)) {
-      subset_df <- sub[, intersect(c("gene_id", "isoform_id"), names(sub)), drop = FALSE]
+    if (analysis_level == "gene") {
+      out_df <- subdf %>%
+        dplyr::select(gene_id) %>%
+        dplyr::mutate(gene_id = strip_version(gene_id)) %>%
+        dplyr::distinct() %>%
+        dplyr::left_join(gene2sym, by = "gene_id")
     } else {
-      # If it's a vector → convert explicitly to a named data frame
-      colname <- if (analysis_level == "gene") "gene_id" else "isoform_id"
-      subset_df <- data.frame(setNames(list(sub), colname))
+      out_df <- subdf %>%
+        dplyr::select(isoform_id, gene_id) %>%
+        dplyr::mutate(
+          isoform_id = strip_version(isoform_id),
+          gene_id    = strip_version(gene_id)
+        ) %>%
+        dplyr::distinct() %>%
+        dplyr::left_join(gene2sym, by = "gene_id")
     }
     
     write.table(
-      subset_df,
+      out_df,
       file.path(out_tbl, paste0(nm, "_", drug, ".tsv")),
       sep = "\t", quote = FALSE, row.names = FALSE
     )
   }
-  
 }
 
-cat("\n>>> Part 2 complete: MYC categories saved under results/4_categories/tables\n")
-
-
+cat("\n>>> Part 2 complete: categories saved under results/4_categories/tables\n")

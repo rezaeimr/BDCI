@@ -1,157 +1,314 @@
 ## ============================================================
-## 3_enrichment.R — GSEA + ORA (gene_id-based)
-## Color rules + ratio labels
+## 3_enrichment.R — Enrichment (GSEA + ORA + KEGG) | gene_id
+## - GSEA: fgseaMultilevel on MSigDB (H, C5:BP, C2:CP) + KEGG gene sets
+## - ORA: MSigDB (enricher) + KEGG (enrichKEGG)
+## - Universe: expressed_universe_<analysis_level>.tsv (REQUIRED)
+## - ORA x = GeneRatio (Count / inputN); bar labels = Count/setSize
 ## ============================================================
 
 suppressPackageStartupMessages({
   library(tidyverse)
+  library(BiocParallel)
   library(fgsea)
   library(msigdbr)
   library(clusterProfiler)
-  library(enrichplot)
   library(org.Mm.eg.db)
 })
 
 set.seed(1)
-message(">>> 3_enrichment running — GSEA + ORA with ratio labels")
+message(">>> 3_enrichment running")
 
-## -------------------- Directories --------------------
+## -------------------- Parameters --------------------
+n_cores     <- 4
+padj_cutoff <- 0.05
+
+analysis_level <- "gene"          # used only for universe filename; enrichment uses gene_id
+species_name   <- "Mus musculus"  # manual
+
+col_up   <- "#D62728"
+col_down <- "#1F77B4"
+
+strip_version <- function(x) sub("\\..*$", "", x)
+
+## -------------------- Parallel backend --------------------
+BiocParallel::register(BiocParallel::SnowParam(workers = n_cores, type = "SOCK"))
+options(mc.cores = n_cores)
+
+## -------------------- Paths --------------------
 project_root <- getwd()
 data_dir     <- file.path(project_root, "data")
 
 de_tbl   <- file.path(project_root, "results", "1_DEAnalysis", "tables", "shrunk")
 int_tbl  <- file.path(project_root, "results", "2_interaction", "tables")
 
-res_dir  <- file.path(project_root, "results", "3_enrichment")
-tbl_dir  <- file.path(res_dir, "tables")
-fig_dir  <- file.path(res_dir, "figures")
+out_root <- file.path(project_root, "results", "3_enrichment")
+tbl_dir  <- file.path(out_root, "tables")
+fig_dir  <- file.path(out_root, "figures")
 dir.create(tbl_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
 
-## -------------------- Parameters --------------------
-padj_cutoff <- 0.05
+## -------------------- Annotation (optional symbols) --------------------
+annotation_fp <- file.path(data_dir, "annotation.txt")
+id2sym <- NULL
+if (file.exists(annotation_fp)) {
+  annotation <- read.delim(annotation_fp, check.names = FALSE)
+  sym_col <- if ("symbol" %in% names(annotation)) "symbol" else if ("gene_name" %in% names(annotation)) "gene_name" else NA
+  if (!is.na(sym_col) && "gene_id" %in% names(annotation)) {
+    ann2 <- annotation %>%
+      dplyr::transmute(gene_id = strip_version(gene_id), SYMBOL = .data[[sym_col]]) %>%
+      dplyr::distinct(gene_id, .keep_all = TRUE)
+    id2sym <- setNames(ann2$SYMBOL, ann2$gene_id)
+  }
+}
 
-## -------------------- Annotation --------------------
-annotation <- read.delim(file.path(data_dir, "annotation.txt"), check.names = FALSE)
-annotation <- annotation %>%
-  dplyr::select(gene_id, symbol) %>%
-  distinct(gene_id, .keep_all = TRUE)
-id2sym <- setNames(annotation$symbol, annotation$gene_id)
+## -------------------- Universe (REQUIRED) --------------------
+universe_fp <- file.path(project_root, "results", "1_DEAnalysis", "tables",
+                         paste0("expressed_universe_", analysis_level, ".tsv"))
+if (!file.exists(universe_fp)) stop("Missing universe: ", universe_fp)
 
-## ============================================================
-## MSigDB
-## ============================================================
+u <- read.delim(universe_fp, check.names = FALSE)
+if (ncol(u) < 1) stop("Universe file has no columns: ", universe_fp)
+
+universe_ens <- unique(na.omit(strip_version(u[[1]])))
+if (length(universe_ens) < 50) stop("Universe too small (<50): ", universe_fp)
+
+## Universe (ENTREZ) for KEGG ORA
+universe_entrez <- mapIds(
+  org.Mm.eg.db,
+  keys      = universe_ens,
+  column    = "ENTREZID",
+  keytype   = "ENSEMBL",
+  multiVals = "first"
+) %>% unname() %>% na.omit() %>% unique()
+
+## -------------------- MSigDB (for GSEA + ORA) --------------------
 message("Loading MSigDB...")
 msigdb <- list(
-  HALLMARK = msigdbr("Mus musculus", "H"),
-  GOBP     = msigdbr("Mus musculus", "C5", "BP"),
-  C2CP     = msigdbr("Mus musculus", "C2", "CP"),
-  KEGG     = msigdbr("Mus musculus", "C2", "CP:KEGG")
-)
-gmt_list <- lapply(msigdb, function(df)
-  split(df$ensembl_gene, df$gs_name)
+  HALLMARK = msigdbr::msigdbr(species = species_name, category = "H"),
+  GOBP     = msigdbr::msigdbr(species = species_name, category = "C5", subcategory = "BP"),
+  C2CP     = msigdbr::msigdbr(species = species_name, category = "C2", subcategory = "CP")
 )
 
-strip_version <- function(x) sub("\\..*$", "", x)
+term2gene_list <- lapply(msigdb, function(df) {
+  df %>%
+    dplyr::transmute(gs_name, ensembl_gene = strip_version(ensembl_gene)) %>%
+    dplyr::distinct()
+})
 
-## ============================================================
-## Helper plotting functions
-## ============================================================
+term_sizes_u <- lapply(term2gene_list, function(t2g) {
+  t2g %>%
+    dplyr::filter(ensembl_gene %in% universe_ens) %>%
+    dplyr::count(gs_name, name = "setSize")
+})
 
-plot_gsea_bar <- function(gsea_df, out_file, title = NULL) {
-  df <- gsea_df %>%
-    filter(!is.na(padj), padj < padj_cutoff) %>%
-    arrange(NES) %>%
-    slice_head(n = 20) %>%
-    mutate(pathway = forcats::fct_reorder(pathway, NES),
-           ratio_label = paste0(leadingEdgeCount, "/", size))
-  if (nrow(df) == 0) return(NULL)
+gmt_list <- lapply(term2gene_list, function(t2g) split(t2g$ensembl_gene, t2g$gs_name))
+
+## -------------------- KEGG gene sets for GSEA (ENSEMBL IDs) --------------------
+build_kegg_gmt <- function(universe_ens, organism = "mmu") {
+  k <- clusterProfiler::download_KEGG(species = organism)
   
-  p <- ggplot(df, aes(x = NES, y = pathway, fill = NES > 0)) +
+  # Join pathway IDs to readable names
+  id2name <- k$KEGGPATHID2NAME %>%
+    tibble::as_tibble() %>%
+    dplyr::transmute(from, pathway_name = to)
+  
+  t2g_entrez <- k$KEGGPATHID2EXTID %>%
+    tibble::as_tibble() %>%
+    dplyr::left_join(id2name, by = "from") %>%
+    dplyr::transmute(gs_name = ifelse(!is.na(pathway_name), pathway_name, from),
+                     ENTREZID = as.character(to)) %>%
+    dplyr::filter(!is.na(ENTREZID))
+  
+  # Keep names on the vector for correct lookup
+  entrez_to_ens <- mapIds(
+    org.Mm.eg.db,
+    keys      = unique(t2g_entrez$ENTREZID),
+    keytype   = "ENTREZID",
+    column    = "ENSEMBL",
+    multiVals = "first"
+  )
+  
+  t2g_ens <- t2g_entrez %>%
+    dplyr::mutate(ensembl_gene = strip_version(entrez_to_ens[ENTREZID])) %>%
+    dplyr::filter(!is.na(ensembl_gene), ensembl_gene %in% universe_ens) %>%
+    dplyr::distinct(gs_name, ensembl_gene)
+  
+  split(t2g_ens$ensembl_gene, t2g_ens$gs_name)
+}
+
+message("Loading KEGG gene sets for GSEA...")
+kegg_gmt <- build_kegg_gmt(universe_ens, organism = "mmu")
+message("KEGG pathways loaded: ", length(kegg_gmt))
+
+## -------------------- Theme --------------------
+theme_enrich <- function() {
+  theme_bw(9) +
+    theme(
+      panel.grid = element_blank(),
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      axis.text.y = element_text(size = 8)
+    )
+}
+
+## -------------------- Plots --------------------
+plot_gsea_bar <- function(gres_full, out_base, title_text) {
+  dfp <- gres_full %>%
+    dplyr::filter(!is.na(padj), padj < padj_cutoff)
+  if (nrow(dfp) == 0) return(invisible(NULL))
+  
+  dfp <- dfp %>%
+    dplyr::mutate(
+      leadingEdgeCount = vapply(leadingEdge, length, integer(1)),
+      ratio_label = paste0(leadingEdgeCount, "/", size)
+    ) %>%
+    dplyr::arrange(dplyr::desc(abs(NES))) %>%
+    dplyr::slice_head(n = 20) %>%
+    dplyr::mutate(
+      pathway = forcats::fct_reorder(pathway, NES),
+      dir = ifelse(NES > 0, "Up", "Down")
+    )
+  
+  p <- ggplot(dfp, aes(x = NES, y = pathway, fill = dir)) +
     geom_col() +
     geom_text(aes(x = NES / 2, label = ratio_label),
               color = "black", size = 3.2, fontface = "bold") +
-    scale_fill_manual(values = c("TRUE" = "#D62728", "FALSE" = "#1F77B4"),
-                      labels = c("FALSE" = "Suppressed (NES<0)", "TRUE" = "Activated (NES>0)"),
+    scale_fill_manual(values = c(Up = col_up, Down = col_down),
                       name = "Direction") +
-    labs(x = "Normalized Enrichment Score (NES)", y = NULL, title = title) +
-    theme_bw(9)
-  ggsave(out_file, p, width = 7, height = 5, dpi = 300)
-}
-
-plot_ora_bar <- function(res, out_file, title = NULL, direction = "up") {
-  df <- as.data.frame(res)
-  if (nrow(df) == 0) return(NULL)
-  df <- df %>%
-    arrange(p.adjust) %>%
-    mutate(RatioLabel = paste0(Count, "/", setSize))
-  color <- if (direction == "up") "#D62728" else "#1F77B4"
+    labs(title = title_text, x = "NES", y = NULL) +
+    theme_enrich()
   
-  p <- ggplot(df, aes(x = Count, y = reorder(Description, Count))) +
-    geom_col(fill = color) +
-    geom_text(aes(label = RatioLabel),
-              position = position_stack(vjust = 0.5), size = 3.2, color = "black", fontface = "bold") +
-    labs(x = "Gene count", y = NULL, title = title) +
-    theme_bw(9) +
-    theme(axis.text.y = element_text(size = 8))
-  ggsave(out_file, p, width = 7, height = 5, dpi = 300)
+  ggsave(paste0(out_base, ".pdf"),  p, width = 7, height = 5)
+  ggsave(paste0(out_base, ".tiff"), p, width = 7, height = 5, dpi = 300,
+         device = "tiff", compression = "lzw")
+}
+
+plot_ora_bar <- function(df_sig, out_base, fill_col) {
+  if (nrow(df_sig) == 0) return(invisible(NULL))
+  
+  dfp <- df_sig %>%
+    dplyr::arrange(p.adjust) %>%
+    dplyr::mutate(Description = forcats::fct_reorder(Description, GeneRatio))
+  
+  p <- ggplot(dfp, aes(x = GeneRatio, y = Description)) +
+    geom_col(fill = fill_col) +
+    geom_text(aes(x = GeneRatio / 2, label = RatioLabel),
+              size = 3.2, color = "black", fontface = "bold") +
+    labs(x = "GeneRatio", y = NULL) +
+    theme_enrich()
+  
+  ggsave(paste0(out_base, ".pdf"),  p, width = 7, height = 5)
+  ggsave(paste0(out_base, ".tiff"), p, width = 7, height = 5, dpi = 300,
+         device = "tiff", compression = "lzw")
+}
+
+## -------------------- Helpers --------------------
+write_gsea_table <- function(gres, out_tsv) {
+  if (is.null(gres) || nrow(gres) == 0) return(invisible(NULL))
+  
+  out_tbl <- gres %>%
+    dplyr::arrange(padj, dplyr::desc(NES)) %>%
+    dplyr::transmute(
+      pathway = .data$pathway,
+      size, ES, NES, pval, padj,
+      leadingEdge
+    )
+  
+  if (!is.null(id2sym)) {
+    out_tbl <- out_tbl %>%
+      dplyr::mutate(
+        leadingEdge_symbols = vapply(
+          leadingEdge,
+          function(ids) paste(na.omit(id2sym[strip_version(ids)]), collapse = ";"),
+          character(1)
+        )
+      )
+  }
+  
+  out_tbl <- out_tbl %>%
+    dplyr::mutate(leadingEdge = vapply(leadingEdge, paste, collapse = ";", character(1)))
+  
+  write.table(out_tbl, out_tsv, sep = "\t", quote = FALSE, row.names = FALSE)
+  out_tbl
 }
 
 ## ============================================================
-## GSEA
+## 1) GSEA (MSigDB + KEGG)
 ## ============================================================
-
 tt_files <- c(
   list.files(de_tbl,  pattern = "^tT_.*\\.tsv$", full.names = TRUE),
   list.files(int_tbl, pattern = "^tT_.*\\.tsv$", full.names = TRUE)
 )
-if (length(tt_files) == 0) stop("No tT_*.tsv files found for GSEA.")
+if (length(tt_files) == 0) stop("No tT_*.tsv files found.")
 
 for (fp in tt_files) {
   tag_raw <- tools::file_path_sans_ext(basename(fp))
   tag <- sub("^tT_", "", tag_raw)
-  cat("\n>>> GSEA on:", tag, "\n")
+  message("GSEA: ", tag)
   
   df <- read.delim(fp, check.names = FALSE)
-  if (!all(c("gene_id", "log2FoldChange") %in% names(df))) next
+  if (!("gene_id" %in% names(df))) stop("Missing gene_id in: ", basename(fp))
   
-  df2 <- df %>% filter(!is.na(gene_id) & !is.na(log2FoldChange))
-  if (nrow(df2) < 50) next
-  ranks <- setNames(df2$log2FoldChange, df2$gene_id)
+  rank_col <- if ("stat" %in% names(df)) "stat" else if ("log2FoldChange" %in% names(df)) "log2FoldChange" else NA
+  if (is.na(rank_col)) stop("Need stat or log2FoldChange in: ", basename(fp))
   
+  df2 <- df %>%
+    dplyr::transmute(gene_id = strip_version(gene_id), rank = .data[[rank_col]]) %>%
+    dplyr::filter(!is.na(gene_id), is.finite(rank), gene_id %in% universe_ens) %>%
+    dplyr::group_by(gene_id) %>%
+    dplyr::summarise(rank = rank[which.max(abs(rank))], .groups = "drop")
+  
+  ranks <- setNames(df2$rank, df2$gene_id)
+  if (length(ranks) < 50) next
+  
+  ## ---- MSigDB GSEA ----
   for (set_tag in names(gmt_list)) {
-    cat("  -", set_tag, "\n")
     gres <- tryCatch(
-      fgseaMultilevel(pathways = gmt_list[[set_tag]], stats = ranks),
+      fgsea::fgseaMultilevel(
+        pathways = gmt_list[[set_tag]],
+        stats    = ranks,
+        BPPARAM  = BiocParallel::bpparam()
+      ),
       error = function(e) NULL
     )
     if (is.null(gres) || nrow(gres) == 0) next
     
-    gres <- gres %>%
-      arrange(padj, desc(NES)) %>%
-      mutate(leadingEdgeCount = vapply(leadingEdge, length, integer(1)),
-             leadingEdge_symbols = vapply(
-               leadingEdge,
-               function(ids) paste(na.omit(id2sym[ids]), collapse = ";"),
-               character(1)
-             )) %>%
-      mutate(across(where(is.list),
-                    ~ vapply(.x, paste, collapse = ";", character(1))))
-    
     out_tsv <- file.path(tbl_dir, paste0("GSEA_", set_tag, "_", tag, ".tsv"))
-    write.table(gres, out_tsv, sep = "\t", quote = FALSE, row.names = FALSE)
+    write_gsea_table(gres, out_tsv)
     
-    out_png <- file.path(fig_dir, paste0("GSEA_", set_tag, "_", tag, ".png"))
-    plot_gsea_bar(gres, out_png, paste0("GSEA - ", set_tag, " (", tag, ")"))
+    out_base <- file.path(fig_dir, paste0("GSEA_", set_tag, "_", tag))
+    plot_gsea_bar(
+      gres_full  = gres %>% dplyr::transmute(pathway, NES, padj, size, leadingEdge),
+      out_base   = out_base,
+      title_text = paste0(set_tag, " - ", tag)
+    )
+  }
+  
+  ## ---- KEGG GSEA ----
+  gres_kegg <- tryCatch(
+    fgsea::fgseaMultilevel(
+      pathways = kegg_gmt,
+      stats    = ranks,
+      BPPARAM  = BiocParallel::bpparam()
+    ),
+    error = function(e) NULL
+  )
+  
+  if (!is.null(gres_kegg) && nrow(gres_kegg) > 0) {
+    out_tsv <- file.path(tbl_dir, paste0("GSEA_KEGG_", tag, ".tsv"))
+    write_gsea_table(gres_kegg, out_tsv)
+    
+    out_base <- file.path(fig_dir, paste0("GSEA_KEGG_", tag))
+    plot_gsea_bar(
+      gres_full  = gres_kegg %>% dplyr::transmute(pathway, NES, padj, size, leadingEdge),
+      out_base   = out_base,
+      title_text = paste0("KEGG - ", tag)
+    )
   }
 }
 
-cat("\n>>> GSEA complete.\n")
-
 ## ============================================================
-## ORA (fixed setSize + ratio labeling)
+## 2) ORA (MSigDB) — x=GeneRatio, label=Count/setSize
 ## ============================================================
-
 up_files <- c(
   list.files(de_tbl,  pattern = "^up_.*\\.tsv$", full.names = TRUE),
   list.files(int_tbl, pattern = "^up_.*\\.tsv$", full.names = TRUE)
@@ -160,43 +317,32 @@ down_files <- c(
   list.files(de_tbl,  pattern = "^down_.*\\.tsv$", full.names = TRUE),
   list.files(int_tbl, pattern = "^down_.*\\.tsv$", full.names = TRUE)
 )
-all_files <- c(up_files, down_files)
-if (length(all_files) == 0) stop("No up/down tables found for ORA.")
+ora_files <- c(up_files, down_files)
+if (length(ora_files) == 0) stop("No up_/down_ tables found.")
 
-for (fp in all_files) {
-  tag_raw <- tools::file_path_sans_ext(basename(fp))
-  tag <- sub("\\.tsv$", "", tag_raw)
-  cat("\n>>> ORA on:", tag, "\n")
+for (fp in ora_files) {
+  tag <- tools::file_path_sans_ext(basename(fp))
+  message("ORA: ", tag)
   
   df <- read.delim(fp, check.names = FALSE)
-  if (!"gene_id" %in% colnames(df)) next
+  if (!("gene_id" %in% names(df))) stop("Missing gene_id in: ", basename(fp))
+  
   genes_ens <- unique(na.omit(strip_version(df$gene_id)))
-  if (length(genes_ens) < 10) {
-    cat("  [info] <10 genes; skipping.\n")
-    next
-  }
+  if (length(genes_ens) < 10) next
   
-  direction <- if (grepl("^up_", tag)) "up" else "down"
-  bar_color <- if (direction == "up") "#D62728" else "#1F77B4"
+  fill_col <- if (grepl("^up_", tag)) col_up else col_down
+  inputN <- length(genes_ens)
   
-  for (set_name in names(msigdb)) {
-    cat("  -", set_name, "\n")
+  for (set_name in names(term2gene_list)) {
+    t2g <- term2gene_list[[set_name]]
     
-    # TERM2GENE and set sizes
-    term2gene <- msigdb[[set_name]] %>%
-      dplyr::mutate(ensembl_gene = strip_version(ensembl_gene)) %>%
-      dplyr::distinct(gs_name, ensembl_gene)
-    
-    term_sizes <- term2gene %>%
-      dplyr::count(gs_name, name = "setSize")
-    
-    # ORA
     res <- tryCatch(
       clusterProfiler::enricher(
-        gene = genes_ens,
-        TERM2GENE = term2gene,
+        gene      = genes_ens,
+        universe  = universe_ens,
+        TERM2GENE = t2g,
         pAdjustMethod = "BH",
-        qvalueCutoff = padj_cutoff
+        qvalueCutoff  = padj_cutoff
       ),
       error = function(e) NULL
     )
@@ -205,48 +351,95 @@ for (fp in all_files) {
     df_out <- as.data.frame(res)
     if (nrow(df_out) == 0) next
     
-    # Add setSize by joining on ID (ID == gs_name)
     df_out <- df_out %>%
-      dplyr::left_join(term_sizes, by = c("ID" = "gs_name"))
+      dplyr::left_join(term_sizes_u[[set_name]], by = c("ID" = "gs_name")) %>%
+      dplyr::mutate(
+        setSize    = tidyr::replace_na(setSize, 0L),
+        GeneRatio  = Count / pmax(inputN, 1L),
+        RatioLabel = paste0(Count, "/", setSize)
+      )
     
-    # If some terms didn’t match (shouldn’t happen), fill safely
-    df_out$setSize[is.na(df_out$setSize)] <- 0L
+    if (!is.null(id2sym)) {
+      df_out$SYMBOLS <- vapply(
+        strsplit(df_out$geneID, "/"),
+        function(ids) paste(na.omit(id2sym[strip_version(ids)]), collapse = ";"),
+        character(1)
+      )
+    }
     
-    # SYMBOLS column from gene IDs
-    df_out$SYMBOLS <- vapply(
-      strsplit(df_out$geneID, "/"),
-      function(ids) paste(na.omit(id2sym[strip_version(ids)]), collapse = ";"),
-      FUN.VALUE = character(1)
-    )
-    
-    # Ratio columns
-    df_out$Ratio      <- df_out$Count / pmax(df_out$setSize, 1L)
-    df_out$RatioLabel <- paste0(df_out$Count, "/", df_out$setSize)
-    
-    # Save FULL table
     out_tsv <- file.path(tbl_dir, paste0("ORA_", set_name, "_", tag, ".tsv"))
     write.table(df_out, out_tsv, sep = "\t", quote = FALSE, row.names = FALSE)
     
-    # Plot ONLY significant
     df_sig <- df_out %>% dplyr::filter(p.adjust < padj_cutoff)
     if (nrow(df_sig) == 0) next
     
-    df_plot <- df_sig %>%
-      dplyr::arrange(p.adjust)
-    
-    p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = Ratio, y = reorder(Description, Ratio))) +
-      ggplot2::geom_col(fill = bar_color) +
-      # Put label in the middle of each bar:
-      ggplot2::geom_text(ggplot2::aes(x = Ratio / 2, label = RatioLabel),
-                         size = 3.2, color = "black", fontface = "bold") +
-      ggplot2::labs(x = "Gene ratio", y = NULL) +
-      ggplot2::theme_bw(9) +
-      ggplot2::theme(axis.text.y = ggplot2::element_text(size = 8))
-    
-    out_png <- file.path(fig_dir, paste0("ORA_", set_name, "_", tag, ".png"))
-    ggplot2::ggsave(out_png, p, width = 7, height = 5, dpi = 300)
+    out_base <- file.path(fig_dir, paste0("ORA_", set_name, "_", tag))
+    plot_ora_bar(df_sig, out_base, fill_col = fill_col)
   }
 }
 
-cat("\n>>> ORA complete\nTables: ", tbl_dir, "\nFigures: ", fig_dir, "\n")
+## ============================================================
+## 3) KEGG ORA (enrichKEGG) — x=GeneRatio, label=Count/setSize
+## ============================================================
+for (fp in ora_files) {
+  tag <- tools::file_path_sans_ext(basename(fp))
+  message("KEGG ORA: ", tag)
+  
+  df <- read.delim(fp, check.names = FALSE)
+  if (!("gene_id" %in% names(df))) stop("Missing gene_id in: ", basename(fp))
+  
+  genes_ens <- unique(na.omit(strip_version(df$gene_id)))
+  if (length(genes_ens) < 10) next
+  
+  fill_col <- if (grepl("^up_", tag)) col_up else col_down
+  
+  genes_entrez <- mapIds(
+    org.Mm.eg.db,
+    keys      = genes_ens,
+    column    = "ENTREZID",
+    keytype   = "ENSEMBL",
+    multiVals = "first"
+  ) %>% unname() %>% na.omit() %>% unique()
+  
+  if (length(genes_entrez) < 10 || length(universe_entrez) < 50) next
+  
+  kegg <- tryCatch(
+    clusterProfiler::enrichKEGG(
+      gene          = genes_entrez,
+      universe      = universe_entrez,
+      organism      = "mmu",
+      pAdjustMethod = "BH",
+      qvalueCutoff  = padj_cutoff
+    ),
+    error = function(e) NULL
+  )
+  if (is.null(kegg)) next
+  
+  df_out <- as.data.frame(kegg)
+  if (nrow(df_out) == 0) next
+  
+  inputN <- length(genes_entrez)
+  
+  df_out <- df_out %>%
+    dplyr::mutate(
+      GeneRatio  = Count / pmax(inputN, 1L),
+      setSize    = as.integer(sub("/.*$", "", BgRatio)),
+      RatioLabel = paste0(Count, "/", setSize)
+    )
+  
+  out_tsv <- file.path(tbl_dir, paste0("ORA_KEGG_", tag, ".tsv"))
+  write.table(df_out, out_tsv, sep = "\t", quote = FALSE, row.names = FALSE)
+  
+  df_sig <- df_out %>% dplyr::filter(p.adjust < padj_cutoff)
+  if (nrow(df_sig) == 0) next
+  
+  out_base <- file.path(fig_dir, paste0("ORA_KEGG_", tag))
+  plot_ora_bar(df_sig, out_base, fill_col = fill_col)
+}
 
+## -------------------- Reproducibility --------------------
+writeLines(capture.output(sessionInfo()), file.path(out_root, "sessionInfo.txt"))
+
+message(">>> done")
+message("Tables: ", tbl_dir)
+message("Figures: ", fig_dir)

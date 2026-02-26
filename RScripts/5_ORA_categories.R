@@ -1,5 +1,9 @@
 ## ============================================================
 ## 5_ORA_Categories.R — ORA on MYC categories
+## - MSigDB (H, C5:BP, C2:CP) + KEGG (enrichKEGG)
+## - Universe: expressed_universe_<analysis_level>.tsv (REQUIRED)
+## - x = GeneRatio (Count / inputN); bar labels = Count/setSize
+## - Output: ORA_<set>_<tag>.tsv / ORA_KEGG_<tag>.tsv
 ## ============================================================
 
 suppressPackageStartupMessages({
@@ -10,137 +14,252 @@ suppressPackageStartupMessages({
 })
 
 set.seed(1)
-message(">>> 5_ORA_Categories running — ORA on MYC category genes")
-
-## -------------------- Directories --------------------
-project_root <- getwd()
-cat_tbl <- file.path(project_root, "results/4_categories/tables")
-ora_tbl <- file.path(project_root, "results/5_ORA_categories/tables")
-ora_fig <- file.path(project_root, "results/5_ORA_categories/figures")
-dir.create(ora_tbl, recursive = TRUE, showWarnings = FALSE)
-dir.create(ora_fig, recursive = TRUE, showWarnings = FALSE)
+message(">>> 5_ORA_Categories running")
 
 ## -------------------- Parameters --------------------
-padj_cutoff <- 0.05
+analysis_level <- "gene"
+padj_cutoff    <- 0.05
+species_name   <- "Mus musculus"
 
-## -------------------- Load MSigDB gene sets (ENSEMBL IDs) --------------------
-message("Loading MSigDB ...")
-msigdb <- list(
-  HALLMARK = msigdbr("Mus musculus", "H"),
-  GOBP     = msigdbr("Mus musculus", "C5", "BP"),
-  C2CP     = msigdbr("Mus musculus", "C2", "CP"),
-  KEGG     = msigdbr("Mus musculus", "C2", "CP:KEGG")
+col_up   <- "#D62728"
+col_down <- "#1F77B4"
+col_other <- "#7F7F7F"
+
+## Color map for known category tags
+category_colors <- c(
+  enhanced_up       = "#D62728",
+  enhanced_down     = "#1F77B4",
+  suppressed_up     = "#FF7F0E",
+  suppressed_down   = "#9467BD",
+  switched_positive = "#2CA02C",
+  switched_negative = "#17BECF",
+  independent_up    = "#E31A1C",
+  independent_down  = "#1F78B4"
 )
-
-gene_sets <- lapply(msigdb, function(df) {
-  df %>% dplyr::select(gs_name, ensembl_gene) %>% distinct()
-})
-
-set_sizes <- lapply(gene_sets, function(df) {
-  df %>% group_by(gs_name) %>% summarise(setSize = n(), .groups = "drop")
-})
 
 strip_version <- function(x) sub("\\..*$", "", x)
 
-## -------------------- Helper for ORA plot --------------------
-plot_ora_bar <- function(res, term_sizes_df, out_file, title_lab) {
-  df <- as.data.frame(res)
-  if (nrow(df) == 0) return(invisible(NULL))
-  df <- df %>%
-    left_join(term_sizes_df, by = c("ID" = "gs_name")) %>%
-    mutate(
-      setSize = ifelse(is.na(setSize), 0L, setSize),
-      RatioLabel = paste0(Count, "/", setSize)
-    ) %>%
-    arrange(p.adjust) %>%
-    slice_head(n = 20)
-  p <- ggplot(df, aes(x = Count, y = reorder(Description, Count), fill = -log10(p.adjust))) +
-    geom_col() +
-    geom_text(aes(label = RatioLabel),
-              position = position_stack(vjust = 0.5),
-              size = 3, color = "black") +
-    scale_fill_gradientn(colors = c("blue", "white", "red"), name = "-log10(p.adjust)") +
-    labs(x = "Count", y = NULL, title = title_lab) +
-    theme_bw(base_size = 9) +
-    theme(axis.text.y = element_text(size = 8))
-  ggsave(out_file, p, width = 7, height = 5, dpi = 300)
+## -------------------- Paths --------------------
+project_root <- getwd()
+data_dir     <- file.path(project_root, "data")
+
+cat_tbl  <- file.path(project_root, "results/4_categories/tables")
+out_root <- file.path(project_root, "results/5_ORA_categories")
+tbl_dir  <- file.path(out_root, "tables")
+fig_dir  <- file.path(out_root, "figures")
+dir.create(tbl_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+
+## -------------------- Annotation (optional symbols) --------------------
+annotation_fp <- file.path(data_dir, "annotation.txt")
+id2sym <- NULL
+if (file.exists(annotation_fp)) {
+  annotation <- read.delim(annotation_fp, check.names = FALSE)
+  sym_col <- if ("symbol" %in% names(annotation)) "symbol" else if ("gene_name" %in% names(annotation)) "gene_name" else NA
+  if (!is.na(sym_col) && "gene_id" %in% names(annotation)) {
+    ann2 <- annotation %>%
+      dplyr::transmute(gene_id = strip_version(gene_id), SYMBOL = .data[[sym_col]]) %>%
+      dplyr::distinct(gene_id, .keep_all = TRUE)
+    id2sym <- setNames(ann2$SYMBOL, ann2$gene_id)
+  }
+}
+
+## -------------------- Universe (REQUIRED) --------------------
+universe_fp <- file.path(project_root, "results", "1_DEAnalysis", "tables",
+                         paste0("expressed_universe_", analysis_level, ".tsv"))
+if (!file.exists(universe_fp)) stop("Missing universe: ", universe_fp)
+
+u <- read.delim(universe_fp, check.names = FALSE)
+if (ncol(u) < 1) stop("Universe file has no columns: ", universe_fp)
+
+universe_ens <- unique(na.omit(strip_version(u[[1]])))
+if (length(universe_ens) < 50) stop("Universe too small (<50): ", universe_fp)
+
+## Universe (ENTREZ) for KEGG ORA
+universe_entrez <- mapIds(
+  org.Mm.eg.db,
+  keys      = universe_ens,
+  column    = "ENTREZID",
+  keytype   = "ENSEMBL",
+  multiVals = "first"
+) %>% unname() %>% na.omit() %>% unique()
+
+## -------------------- MSigDB gene sets --------------------
+message("Loading MSigDB...")
+msigdb <- list(
+  HALLMARK = msigdbr::msigdbr(species = species_name, category = "H"),
+  GOBP     = msigdbr::msigdbr(species = species_name, category = "C5", subcategory = "BP"),
+  C2CP     = msigdbr::msigdbr(species = species_name, category = "C2", subcategory = "CP")
+)
+
+term2gene_list <- lapply(msigdb, function(df) {
+  df %>%
+    dplyr::transmute(gs_name, ensembl_gene = strip_version(ensembl_gene)) %>%
+    dplyr::distinct()
+})
+
+term_sizes_u <- lapply(term2gene_list, function(t2g) {
+  t2g %>%
+    dplyr::filter(ensembl_gene %in% universe_ens) %>%
+    dplyr::count(gs_name, name = "setSize")
+})
+
+## -------------------- Theme --------------------
+theme_enrich <- function() {
+  theme_bw(9) +
+    theme(
+      panel.grid  = element_blank(),
+      plot.title  = element_text(face = "bold", hjust = 0.5),
+      axis.text.y = element_text(size = 8)
+    )
+}
+
+## -------------------- Plot --------------------
+plot_ora_bar <- function(df_sig, out_base, fill_col) {
+  if (nrow(df_sig) == 0) return(invisible(NULL))
+
+  dfp <- df_sig %>%
+    dplyr::arrange(p.adjust) %>%
+    dplyr::slice_head(n = 20) %>%
+    dplyr::mutate(Description = forcats::fct_reorder(Description, GeneRatio))
+
+  p <- ggplot(dfp, aes(x = GeneRatio, y = Description)) +
+    geom_col(fill = fill_col) +
+    geom_text(aes(x = GeneRatio / 2, label = RatioLabel),
+              size = 3.2, color = "black", fontface = "bold") +
+    labs(x = "GeneRatio", y = NULL) +
+    theme_enrich()
+
+  ggsave(paste0(out_base, ".pdf"),  p, width = 7, height = 5)
+  ggsave(paste0(out_base, ".tiff"), p, width = 7, height = 5, dpi = 300,
+         device = "tiff", compression = "lzw")
+}
+
+## -------------------- Pick fill color from tag --------------------
+pick_fill <- function(tag) {
+  hit <- names(category_colors)[sapply(names(category_colors), function(n) grepl(n, tag))]
+  if (length(hit) > 0) return(category_colors[[hit[1]]])
+  if (grepl("up",   tag, ignore.case = TRUE)) return(col_up)
+  if (grepl("down", tag, ignore.case = TRUE)) return(col_down)
+  col_other
 }
 
 ## ============================================================
-## Run ORA for all MYC categories
+## ORA (MSigDB + KEGG) for each category file
 ## ============================================================
-
 cat_files <- list.files(cat_tbl, pattern = "\\.tsv$", full.names = TRUE)
 if (length(cat_files) == 0) stop("No category files found in ", cat_tbl)
 
 for (fp in cat_files) {
   tag <- tools::file_path_sans_ext(basename(fp))
-  message("\n>>> ORA on category: ", tag)
-  
+  message("ORA: ", tag)
+
   df <- read.delim(fp, check.names = FALSE)
-  
-  ## Detect ID column (prefer gene_id if present)
-  id_col <- if ("gene_id" %in% names(df)) "gene_id" else if ("feature_id" %in% names(df)) "feature_id" else if ("isoform_id" %in% names(df)) "isoform_id" else NULL
-  if (is.null(id_col)) {
-    message("  [skip] No suitable ID column in ", tag)
-    next
-  }
-  
-  ## Extract unique Ensembl IDs
+
+  id_col <- if ("gene_id" %in% names(df)) "gene_id" else
+            if ("feature_id" %in% names(df)) "feature_id" else
+            if ("isoform_id" %in% names(df)) "isoform_id" else NULL
+  if (is.null(id_col)) { message("  [skip] No ID column: ", tag); next }
+
   genes_ens <- unique(na.omit(strip_version(df[[id_col]])))
-  if (length(genes_ens) < 5) {
-    message("  [info] <5 genes; skipping.")
-    next
-  }
-  
-  ## Run ORA for each gene set
-  for (set_name in names(gene_sets)) {
-    message("  - ", set_name)
-    term2gene <- gene_sets[[set_name]] %>%
-      mutate(ensembl_gene = strip_version(ensembl_gene)) %>%
-      distinct(gs_name, ensembl_gene)
-    
+  if (length(genes_ens) < 10) { message("  [skip] <10 genes: ", tag); next }
+
+  fill_col <- pick_fill(tag)
+  inputN   <- length(genes_ens)
+
+  ## ---- MSigDB ORA ----
+  for (set_name in names(term2gene_list)) {
+    t2g <- term2gene_list[[set_name]]
+
     res <- tryCatch(
-      enricher(
-        gene = genes_ens,
-        TERM2GENE = term2gene,
+      clusterProfiler::enricher(
+        gene          = genes_ens,
+        universe      = universe_ens,
+        TERM2GENE     = t2g,
         pAdjustMethod = "BH",
-        qvalueCutoff = padj_cutoff
+        qvalueCutoff  = padj_cutoff
       ),
       error = function(e) NULL
     )
     if (is.null(res)) next
-    
+
     df_out <- as.data.frame(res)
     if (nrow(df_out) == 0) next
-    
-    ## Add SYMBOLS for clarity
-    ENTREZ2SYMBOL <- AnnotationDbi::mapIds(
-      org.Mm.eg.db,
-      keys = unique(unlist(strsplit(df_out$geneID, "/"))),
-      keytype = "ENSEMBL",
-      column = "SYMBOL",
-      multiVals = "first"
-    )
-    df_out$SYMBOLS <- vapply(
-      strsplit(df_out$geneID, "/"),
-      function(ids) paste(na.omit(ENTREZ2SYMBOL[ids]), collapse = ";"),
-      FUN.VALUE = character(1)
-    )
-    
-    ## Save ORA table
-    out_tsv <- file.path(ora_tbl, paste0("ORA_", set_name, "_", tag, ".tsv"))
+
+    df_out <- df_out %>%
+      dplyr::left_join(term_sizes_u[[set_name]], by = c("ID" = "gs_name")) %>%
+      dplyr::mutate(
+        setSize    = tidyr::replace_na(setSize, 0L),
+        GeneRatio  = Count / pmax(inputN, 1L),
+        RatioLabel = paste0(Count, "/", setSize)
+      )
+
+    if (!is.null(id2sym)) {
+      df_out$SYMBOLS <- vapply(
+        strsplit(df_out$geneID, "/"),
+        function(ids) paste(na.omit(id2sym[strip_version(ids)]), collapse = ";"),
+        character(1)
+      )
+    }
+
+    out_tsv <- file.path(tbl_dir, paste0("ORA_", set_name, "_", tag, ".tsv"))
     write.table(df_out, out_tsv, sep = "\t", quote = FALSE, row.names = FALSE)
-    
-    ## Plot ORA (significant terms)
-    plot_ora_bar(
-      res,
-      term_sizes_df = set_sizes[[set_name]],
-      out_file = file.path(ora_fig, paste0("ORA_", set_name, "_", tag, ".png")),
-      title_lab = paste(set_name, "-", tag)
-    )
+
+    df_sig <- df_out %>% dplyr::filter(p.adjust < padj_cutoff)
+    if (nrow(df_sig) == 0) next
+
+    out_base <- file.path(fig_dir, paste0("ORA_", set_name, "_", tag))
+    plot_ora_bar(df_sig, out_base, fill_col = fill_col)
   }
+
+  ## ---- KEGG ORA ----
+  message("  KEGG ORA: ", tag)
+
+  genes_entrez <- mapIds(
+    org.Mm.eg.db,
+    keys      = genes_ens,
+    column    = "ENTREZID",
+    keytype   = "ENSEMBL",
+    multiVals = "first"
+  ) %>% unname() %>% na.omit() %>% unique()
+
+  if (length(genes_entrez) < 10 || length(universe_entrez) < 50) next
+
+  kegg <- tryCatch(
+    clusterProfiler::enrichKEGG(
+      gene          = genes_entrez,
+      universe      = universe_entrez,
+      organism      = "mmu",
+      pAdjustMethod = "BH",
+      qvalueCutoff  = padj_cutoff
+    ),
+    error = function(e) NULL
+  )
+  if (is.null(kegg)) next
+
+  df_out <- as.data.frame(kegg)
+  if (nrow(df_out) == 0) next
+
+  df_out <- df_out %>%
+    dplyr::mutate(
+      GeneRatio  = Count / pmax(length(genes_entrez), 1L),
+      setSize    = as.integer(sub("/.*$", "", BgRatio)),
+      RatioLabel = paste0(Count, "/", setSize)
+    )
+
+  out_tsv <- file.path(tbl_dir, paste0("ORA_KEGG_", tag, ".tsv"))
+  write.table(df_out, out_tsv, sep = "\t", quote = FALSE, row.names = FALSE)
+
+  df_sig <- df_out %>% dplyr::filter(p.adjust < padj_cutoff)
+  if (nrow(df_sig) == 0) next
+
+  out_base <- file.path(fig_dir, paste0("ORA_KEGG_", tag))
+  plot_ora_bar(df_sig, out_base, fill_col = fill_col)
 }
 
-cat("\n>>> ORA complete.\nTables → ", ora_tbl, "\nFigures → ", ora_fig, "\n")
+## -------------------- Reproducibility --------------------
+writeLines(capture.output(sessionInfo()), file.path(out_root, "sessionInfo.txt"))
 
+message(">>> done")
+message("Tables: ", tbl_dir)
+message("Figures: ", fig_dir)
