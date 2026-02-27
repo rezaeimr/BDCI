@@ -204,10 +204,20 @@ for (drug in drugs) {
   category[(D1 & U2 & UI)] <- "switched_positive"
   category[(U1 & D2 & DI)] <- "switched_negative"
   
-  ## independent
+  ## independent (true independent = no baseline shift)
+  
   is_unassigned <- is.na(category)
-  category[is_unassigned & (U1 & U2)] <- "independent_up"
-  category[is_unassigned & (D1 & D2)] <- "independent_down"
+  
+  ind_up  <- is_unassigned & (U1 & U2)
+  ind_down <- is_unassigned & (D1 & D2)
+  
+  ## true independent: no significant change in drug+OHT/drug
+  category[ind_up  & !UG] <- "independent_up"
+  category[ind_down & !DG] <- "independent_down"
+  
+  ## shifted baseline independent
+  category[ind_up  & UG] <- "shifted_baseline_independent_up"
+  category[ind_down & DG] <- "shifted_baseline_independent_down"
   
   ## ---------------- Split by gate (FIXED) ----------------
   shifted_sub <- rep(NA_character_, nrow(df))
