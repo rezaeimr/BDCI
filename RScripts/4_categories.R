@@ -273,8 +273,21 @@ for (drug in drugs) {
   ## ============================================================
   ## ADDITIVE (final step): among TRUE independent only
   ## Definition:
-  ## Additive = independent_up/down AND NOT significant in interaction
+  ## Additive_up   = independent_up   & up in OHT/DMSO
+  ## Additive_down = independent_down & down in OHT/DMSO
+  ## Interaction filter is kept as safety check
   ## ============================================================
+  
+  ## load OHT/DMSO DE genes
+  up_oht_only <- load_id_table(
+    file.path(de_tbl, "up_DMSO_OHT_vs_DMSO.tsv"),
+    analysis_level
+  )
+  
+  dn_oht_only <- load_id_table(
+    file.path(de_tbl, "down_DMSO_OHT_vs_DMSO.tsv"),
+    analysis_level
+  )
   
   if (analysis_level == "gene") {
     
@@ -288,7 +301,7 @@ for (drug in drugs) {
     
     if (nrow(indep_df) == 0) next
     
-    ## load interaction tables
+    ## interaction genes
     up_int_ids <- load_id_table(
       file.path(int_tbl, paste0("up_int_", drug, ".tsv")),
       analysis_level
@@ -305,13 +318,15 @@ for (drug in drugs) {
       filter(!gene_id %in% int_ids)
     
     add_up <- add_df %>%
-      filter(category == "independent_up") %>%
+      filter(category == "independent_up",
+             gene_id %in% up_oht_only$gene_id) %>%
       select(gene_id) %>%
       distinct() %>%
       left_join(gene2sym, by = "gene_id")
     
     add_dn <- add_df %>%
-      filter(category == "independent_down") %>%
+      filter(category == "independent_down",
+             gene_id %in% dn_oht_only$gene_id) %>%
       select(gene_id) %>%
       distinct() %>%
       left_join(gene2sym, by = "gene_id")
@@ -339,31 +354,32 @@ for (drug in drugs) {
       analysis_level
     )
     
-    int_ids <- unique(up_int_ids$isoform_id)
-    int_ids <- unique(c(int_ids, dn_int_ids$isoform_id))
+    int_ids <- unique(c(up_int_ids$isoform_id, dn_int_ids$isoform_id))
     
     add_df <- indep_df %>%
       filter(!isoform_id %in% int_ids)
     
     add_up <- add_df %>%
-      filter(category == "independent_up") %>%
+      filter(category == "independent_up",
+             isoform_id %in% up_oht_only$isoform_id) %>%
       select(isoform_id, gene_id) %>%
       distinct() %>%
       left_join(gene2sym, by = "gene_id")
     
     add_dn <- add_df %>%
-      filter(category == "independent_down") %>%
+      filter(category == "independent_down",
+             isoform_id %in% dn_oht_only$isoform_id) %>%
       select(isoform_id, gene_id) %>%
       distinct() %>%
       left_join(gene2sym, by = "gene_id")
   }
   
-if (nrow(add_up) > 0)
+  if (nrow(add_up) > 0)
     write.table(add_up,
                 file.path(out_tbl, paste0("additive_up_", drug, ".tsv")),
                 sep = "\t", quote = FALSE, row.names = FALSE)
   
-if (nrow(add_dn) > 0)
+  if (nrow(add_dn) > 0)
     write.table(add_dn,
                 file.path(out_tbl, paste0("additive_down_", drug, ".tsv")),
                 sep = "\t", quote = FALSE, row.names = FALSE)
