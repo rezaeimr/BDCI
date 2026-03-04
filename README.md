@@ -49,7 +49,7 @@ Four core comparisons are derived per drug:
 |---|---|---|
 | drug / DMSO | `tT_<drug>` | What does the drug do at baseline? |
 | (drug+OHT) / (DMSO+OHT) | `tT_<drug>_OHT` | What does the drug do under activation? |
-| (drug+OHT) / drug | `tT_<drug>_OHT__<drug>` | Does adding OHT to a drug-treated cell change expression (gate)? |
+| (drug+OHT) / drug | `tT_<drug>_OHT__<drug>` | Does expression change when OHT is added on top of the drug, independent of DMSO? Used to detect a shifted baseline. |
 | (drug+OHT) / DMSO | `tT_<drug>_OHT_vs_DMSO` | What is the combined effect of drug + activation? |
 
 A separate interaction model (`drug × OHT`) statistically tests whether the drug effect is significantly modified by the baseline state.
@@ -107,23 +107,28 @@ data/
 
 ## Gene Category Definitions
 
-Categories are assigned per drug by integrating three binary signals per gene: significance in the drug-only condition (`U1`/`D1`), in the drug+OHT condition (`U2`/`D2`), and the direction of the interaction term (`UI`/`DI`).
+Categories are assigned per drug by integrating four binary signals per gene:
 
-An additional gate comparison (`drug_OHT vs drug`) determines whether categories represent **true** (non-shifted) or **shifted-baseline** variants.
+- **drug/DMSO** — is the gene significantly DE in the drug-treated condition at baseline (OHT off)?
+- **(drug+OHT)/(DMSO+OHT)** — is it significantly DE under activation (OHT on)?
+- **Interaction term** — does the drug effect significantly differ between OHT off and OHT on (from the factorial model)?
+- **(drug+OHT)/drug** — does expression change significantly when OHT is added directly on top of the drug treatment (i.e., is the baseline itself shifted by the drug)?
+
+The fourth comparison is used to split each primary category into a **true** variant (expression was stable on drug alone before OHT was added, so the OHT-driven change is interpretable) and a **shifted-baseline** variant (expression already changed when OHT was applied to drug-treated cells, indicating the baseline was not stable and the category assignment may be confounded by a pre-existing shift).
 
 | Category | Criteria | Interpretation |
 |---|---|---|
-| **enhanced_up** | Up in drug±OHT; interaction up | Drug effect amplified by baseline activation |
-| **enhanced_down** | Down in drug±OHT; interaction down | Drug repression amplified by activation |
-| **suppressed_up** | Up in drug, interaction down | Drug-driven upregulation blunted by activation |
-| **suppressed_down** | Down in drug, interaction up | Drug-driven repression blunted by activation |
-| **switched_positive** | Down in drug, up in drug+OHT; interaction up | Drug direction reverses under activation |
-| **switched_negative** | Up in drug, down in drug+OHT; interaction down | Drug direction reverses under activation |
-| **independent_up** | Up in both ±OHT conditions; no interaction; gate non-significant | Drug effect independent of baseline state |
-| **independent_down** | Down in both ±OHT conditions; no interaction; gate non-significant | Drug effect independent of baseline state |
-| **shifted_baseline_*** | Any of the above + gate comparison significant | Baseline shift confounds comparison; categorized separately |
-| **additive_up** | Subset of independent_up; also DE in OHT/DMSO; no interaction | Drug and activation converge additively to upregulate |
-| **additive_down** | Subset of independent_down; also DE in OHT/DMSO; no interaction | Drug and activation converge additively to downregulate |
+| **enhanced_up** | Up in drug±OHT; interaction up; (drug+OHT)/drug not significant | Drug-driven upregulation is amplified by baseline activation |
+| **enhanced_down** | Down in drug±OHT; interaction down; (drug+OHT)/drug not significant | Drug-driven repression is amplified by baseline activation |
+| **suppressed_up** | Up in drug/DMSO, interaction down; (drug+OHT)/drug not significant | Drug-driven upregulation is blunted under activation |
+| **suppressed_down** | Down in drug/DMSO, interaction up; (drug+OHT)/drug not significant | Drug-driven repression is blunted under activation |
+| **switched_positive** | Down in drug/DMSO, up in (drug+OHT)/(DMSO+OHT); interaction up | Drug direction reverses when the regulatory factor is active |
+| **switched_negative** | Up in drug/DMSO, down in (drug+OHT)/(DMSO+OHT); interaction down | Drug direction reverses when the regulatory factor is active |
+| **independent_up** | Up in both ±OHT conditions; no interaction; (drug+OHT)/drug not significant | Drug-driven upregulation is unaffected by baseline activation state |
+| **independent_down** | Down in both ±OHT conditions; no interaction; (drug+OHT)/drug not significant | Drug-driven repression is unaffected by baseline activation state |
+| **shifted_baseline_*** | Any of the above + (drug+OHT)/drug significant | The drug-treated baseline is itself shifted by OHT; category is assigned but flagged separately |
+| **additive_up** | Subset of independent_up; also significantly up in OHT/DMSO; no interaction | Gene is independently upregulated by both the drug and baseline activation |
+| **additive_down** | Subset of independent_down; also significantly down in OHT/DMSO; no interaction | Gene is independently downregulated by both the drug and baseline activation |
 
 ---
 
