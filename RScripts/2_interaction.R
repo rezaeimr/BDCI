@@ -27,7 +27,7 @@ padj_cutoff <- 0.01
 lfc_cutoff  <- 0
 
 ## -------------------- Parallel backend (RStudio-safe) -----
-BiocParallel::register(SnowParam(workers = n_cores, type = "SOCK"))
+register(SnowParam(workers = n_cores, type = "SOCK"))
 options(mc.cores = n_cores)
 
 ## -------------------- Directories --------------------
@@ -44,7 +44,7 @@ dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
 ## ============================================================
 
 ## ---- Load metadata ----
-metadata <- read.delim(file.path(data_dir, "metadata.txt"), check.names = FALSE)
+metadata <- read.delim(file.path(data_dir, "metadata_NMD.txt"), check.names = FALSE)
 stopifnot(all(c("SampleID", "drug", "OHT") %in% colnames(metadata)))
 
 metadata$OHT  <- factor(metadata$OHT, levels = c("OFF", "ON"))
@@ -102,33 +102,37 @@ if (length(interaction_terms) == 0) stop("No interaction terms detected in resul
 
 message("Detected interaction terms: ", paste(interaction_terms, collapse = ", "))
 
-term_to_drug <- function(term) {
-  x <- term
-  x <- sub("^drug_", "", x)
-  x <- sub("^drug",  "", x)
-  x <- sub("_vs_.*$", "", x)
-  x <- sub("\\.OHT.*$", "", x)
-  x
+term_to_drug <- function(term, known_drugs) {
+  known_drugs_sorted <- known_drugs[order(nchar(known_drugs), decreasing = TRUE)]
+  for (drug in known_drugs_sorted) {
+    if (grepl(drug, term, fixed = TRUE)) return(drug)
+  }
+  warning("Could not match interaction term to a known drug: ", term)
+  return(NA_character_)
 }
+
+known_drugs <- unique(as.character(metadata$drug))
+known_drugs <- known_drugs[known_drugs != "DMSO"]
 
 ## ---- Run + save tables ----
 for (term in interaction_terms) {
-  drug <- term_to_drug(term)
+  drug <- term_to_drug(term, known_drugs)
+  if (is.na(drug)) next
   message("\n>>> Interaction term: ", term, " | drug: ", drug)
-
+  
   res <- results(dds, name = term)
   res_df <- as.data.frame(res)
-
+  
   # ID column (strip version)
   res_df[[id_col]] <- sub("\\..*$", "", rownames(res_df))
-
+  
   # Merge annotation
   res_df <- merge(res_df, annotation2, by = id_col, all.x = TRUE, sort = FALSE)
-
+  
   # Significance
   res_df$sig <- ifelse(!is.na(res_df$padj) & res_df$padj < padj_cutoff & res_df$log2FoldChange >  lfc_cutoff, "up",
                        ifelse(!is.na(res_df$padj) & res_df$padj < padj_cutoff & res_df$log2FoldChange < -lfc_cutoff, "down", "ns"))
-
+  
   write.table(res_df, file.path(tbl_dir, paste0("tT_int_", drug, ".tsv")),
               sep = "\t", quote = FALSE, row.names = FALSE)
   write.table(subset(res_df, sig == "up"), file.path(tbl_dir, paste0("up_int_", drug, ".tsv")),
@@ -166,13 +170,13 @@ if (length(all_tt) > 0) {
   all_maX <- safe_num(unlist(lapply(all_tt, function(d) log10(d$baseMean + 1)), use.names = FALSE))
   all_maY <- safe_num(unlist(lapply(all_tt, `[[`, "log2FoldChange"), use.names = FALSE))
   all_vY  <- safe_num(unlist(lapply(all_tt, function(d) -log10(pmax(d$padj, .Machine$double.xmin))), use.names = FALSE))
-
+  
   # Volcano x/y
   x_max_v <- max(abs(all_lfc), na.rm = TRUE)
   x_lim_v <- c(-x_max_v, x_max_v)
   y_max_v <- max(all_vY, na.rm = TRUE)
   y_lim_v <- c(0, y_max_v)
-
+  
   # MA x/y
   x_max_ma <- max(all_maX, na.rm = TRUE)
   x_lim_ma <- c(0, x_max_ma)
@@ -189,16 +193,16 @@ for (fp in files) {
     message(" [skip] ", nm, " — empty or unreadable.")
     next
   }
-
+  
   needed <- c("baseMean", "log2FoldChange", "padj", "sig")
   if (!all(needed %in% names(res_df))) {
     message(" [skip] ", nm, " — missing required columns: ", paste(setdiff(needed, names(res_df)), collapse = ", "))
     next
   }
-
+  
   res_df$cat <- factor(res_df$sig, levels = c("ns", "down", "up"))
   plot_df <- res_df %>% arrange(cat)
-
+  
   ## --- MA plot ---
   p_ma <- ggplot(plot_df, aes(x = log10(baseMean + 1), y = log2FoldChange, color = cat)) +
     geom_point(size = 0.6, alpha = 0.8) +
@@ -211,11 +215,11 @@ for (fp in files) {
          x = "log10(baseMean + 1)",
          y = "log2(Fold Change)") +
     theme_bw(base_size = 10)
-
+  
   if (!is.null(x_lim_ma) && !is.null(y_lim_ma)) {
     p_ma <- p_ma + coord_cartesian(xlim = x_lim_ma, ylim = y_lim_ma)
   }
-
+  
   ## --- Volcano plot ---
   p_vol <- ggplot(plot_df, aes(x = log2FoldChange,
                                y = -log10(pmax(padj, .Machine$double.xmin)),
@@ -231,11 +235,11 @@ for (fp in files) {
          x = "log2(Fold Change)",
          y = "-log10(adjusted p-value)") +
     theme_bw(base_size = 10)
-
+  
   if (!is.null(x_lim_v) && !is.null(y_lim_v)) {
     p_vol <- p_vol + coord_cartesian(xlim = x_lim_v, ylim = y_lim_v)
   }
-
+  
   ggsave(file.path(fig_dir, paste0("MA_int_", nm, ".png")), p_ma, width = 6, height = 5, dpi = 300)
   ggsave(file.path(fig_dir, paste0("Volcano_int_", nm, ".png")), p_vol, width = 6.5, height = 5, dpi = 300)
 }

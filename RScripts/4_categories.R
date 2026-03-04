@@ -8,12 +8,14 @@
 
 suppressPackageStartupMessages({
   library(tidyverse)
+  library(dplyr)
   library(ComplexUpset)
   library(ggplot2)
 })
 
 ## ---------------- Parameters ----------------
 analysis_level  <- "gene"   # "gene" or "isoform"
+additive_delta <- 0.2       # |lfc(drug_OHT vs DMSO_OHT) - lfc(drug vs DMSO)| <= delta
 
 ## ---------------- Helpers ----------------
 strip_version <- function(x) sub("\\..*$", "", x)
@@ -84,7 +86,7 @@ sym_col <- if ("symbol" %in% names(annotation)) "symbol" else if ("gene_name" %i
 if (is.na(sym_col)) stop("annotation.txt must have symbol or gene_name column.")
 
 gene2sym <- annotation %>%
-  select(gene_id, SYMBOL = all_of(sym_col)) %>%
+  dplyr::select(gene_id, SYMBOL = all_of(sym_col)) %>%
   mutate(gene_id = strip_version(gene_id)) %>%
   distinct(gene_id, .keep_all = TRUE)
 
@@ -229,16 +231,17 @@ for (drug in drugs) {
   
   category[ind_up   & !UG] <- "independent_up"
   category[ind_down & !DG] <- "independent_down"
-  
   category[ind_up   &  UG] <- "shifted_baseline_independent_up"
   category[ind_down &  DG] <- "shifted_baseline_independent_down"
   
-  ## Shifted-baseline versions for enhanced/suppressed
-  category[category == "enhanced_up"   & !UG] <- "shifted_baseline_enhanced_up"
-  category[category == "enhanced_down" & !DG] <- "shifted_baseline_enhanced_down"
-  category[category == "suppressed_up" & !UG] <- "shifted_baseline_suppressed_up"
-  category[category == "suppressed_down" & !DG] <- "shifted_baseline_suppressed_down"
+  ## Shifted-baseline reclassification for enhanced/suppressed
+  ## Uses the same category vector, before it is written to df
+  category[category == "enhanced_up"    & DG] <- "shifted_baseline_enhanced_up"
+  category[category == "enhanced_down"  & UG] <- "shifted_baseline_enhanced_down"
+  category[category == "suppressed_up"  & DG] <- "shifted_baseline_suppressed_up"
+  category[category == "suppressed_down"& UG] <- "shifted_baseline_suppressed_down"
   
+  ## NOW assign to df
   df$category <- category
   df2 <- df[!is.na(df$category), , drop = FALSE]
   if (nrow(df2) == 0) next
@@ -319,14 +322,14 @@ for (drug in drugs) {
     add_up <- add_df %>%
       filter(category == "independent_up",
              gene_id %in% up_oht_only$gene_id) %>%
-      select(gene_id) %>%
+      dplyr::select(gene_id) %>%
       distinct() %>%
       left_join(gene2sym, by = "gene_id")
     
     add_dn <- add_df %>%
       filter(category == "independent_down",
              gene_id %in% dn_oht_only$gene_id) %>%
-      select(gene_id) %>%
+      dplyr::select(gene_id) %>%
       distinct() %>%
       left_join(gene2sym, by = "gene_id")
     
@@ -361,14 +364,14 @@ for (drug in drugs) {
     add_up <- add_df %>%
       filter(category == "independent_up",
              isoform_id %in% up_oht_only$isoform_id) %>%
-      select(isoform_id, gene_id) %>%
+      dplyr::select(isoform_id, gene_id) %>%
       distinct() %>%
       left_join(gene2sym, by = "gene_id")
     
     add_dn <- add_df %>%
       filter(category == "independent_down",
              isoform_id %in% dn_oht_only$isoform_id) %>%
-      select(isoform_id, gene_id) %>%
+      dplyr::select(isoform_id, gene_id) %>%
       distinct() %>%
       left_join(gene2sym, by = "gene_id")
   }

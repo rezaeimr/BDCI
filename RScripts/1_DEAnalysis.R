@@ -143,6 +143,21 @@ if (!"gene_id" %in% colnames(annotation2)) {
 keep <- rowSums(count_mat >= 10) >= min(table(metadata$group))
 count_mat <- count_mat[keep, , drop = FALSE]
 
+if (analysis_level == "gene") {
+  universe_ids <- strip_version(rownames(count_mat))
+} else {
+  # For isoform level, map isoform IDs back to gene IDs for the universe
+  universe_ids <- unique(strip_version(annotation2$gene_id))
+  universe_ids <- universe_ids[universe_ids %in% strip_version(rownames(count_mat))]
+}
+
+universe_df <- data.frame(gene_id = universe_ids)
+write.table(
+  universe_df,
+  file.path(res_dir, "tables", paste0("expressed_universe_", analysis_level, ".tsv")),
+  sep = "\t", quote = FALSE, row.names = FALSE
+)
+
 #========================
 # DESeq objects
 #========================
