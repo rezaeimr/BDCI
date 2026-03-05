@@ -105,7 +105,6 @@ plot_ora_bar <- function(df_sig, out_base, fill_col) {
   
   dfp <- df_sig %>%
     dplyr::arrange(p.adjust) %>%
-    dplyr::slice_head(n = 20) %>%
     dplyr::mutate(Description = forcats::fct_reorder(Description, GeneRatio))
   
   p <- ggplot(dfp, aes(x = GeneRatio, y = Description)) +
