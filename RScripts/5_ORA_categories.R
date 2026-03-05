@@ -120,18 +120,22 @@ plot_ora_bar <- function(df_sig, out_base, fill_col) {
          device = "tiff", compression = "lzw")
 }
 
-## -------------------- Fill color from tag (MATCH 3_enrichment) --------------------
+## -------------------- Fill color from tag --------------------
 pick_fill <- function(tag) {
-  if (grepl("up",   tag, ignore.case = TRUE)) return(col_up)
-  if (grepl("down", tag, ignore.case = TRUE)) return(col_down)
+  if (grepl("positive", tag, ignore.case = TRUE)) return(col_up)
+  if (grepl("negative", tag, ignore.case = TRUE)) return(col_down)
+  if (grepl("up",       tag, ignore.case = TRUE)) return(col_up)
+  if (grepl("down",     tag, ignore.case = TRUE)) return(col_down)
   col_other
 }
 
 ## ============================================================
 ## ORA (MSigDB + KEGG) for each category file
 ## (includes shifted_baseline_* automatically)
+## upset_data_* files are excluded
 ## ============================================================
 cat_files <- list.files(cat_tbl, pattern = "\\.tsv$", full.names = TRUE)
+cat_files <- cat_files[!grepl("upset_data_", basename(cat_files))]
 if (length(cat_files) == 0) stop("No category files found in ", cat_tbl)
 
 for (fp in cat_files) {
