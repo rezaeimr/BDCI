@@ -120,12 +120,12 @@ for (drug in drugs) {
     upset_df <- tibble(gene_id = ids)
     ref <- upset_df$gene_id
     
-    upset_df[[paste0("up_", drug)]]       <- ref %in% up_no$gene_id
-    upset_df[[paste0("up_", drug, "_OHT")]] <- ref %in% up_oht$gene_id
-    upset_df[[paste0("down_", drug)]]       <- ref %in% dn_no$gene_id
-    upset_df[[paste0("down_", drug, "_OHT")]] <- ref %in% dn_oht$gene_id
-    upset_df[[paste0("up_int_", drug)]]     <- ref %in% up_int$gene_id
-    upset_df[[paste0("down_int_", drug)]]   <- ref %in% dn_int$gene_id
+    upset_df[[paste0("up_", drug)]]                    <- ref %in% up_no$gene_id
+    upset_df[[paste0("up_", drug, "_OHT")]]            <- ref %in% up_oht$gene_id
+    upset_df[[paste0("down_", drug)]]                  <- ref %in% dn_no$gene_id
+    upset_df[[paste0("down_", drug, "_OHT")]]          <- ref %in% dn_oht$gene_id
+    upset_df[[paste0("up_int_", drug)]]                <- ref %in% up_int$gene_id
+    upset_df[[paste0("down_int_", drug)]]              <- ref %in% dn_int$gene_id
     upset_df[[paste0("up_", drug, "_OHT__", drug)]]   <- ref %in% gate_up$gene_id
     upset_df[[paste0("down_", drug, "_OHT__", drug)]] <- ref %in% gate_dn$gene_id
     
@@ -144,12 +144,12 @@ for (drug in drugs) {
     upset_df <- tibble(isoform_id = ids) %>% left_join(map_df, by = "isoform_id")
     ref <- upset_df$isoform_id
     
-    upset_df[[paste0("up_", drug)]]       <- ref %in% up_no$isoform_id
-    upset_df[[paste0("up_", drug, "_OHT")]] <- ref %in% up_oht$isoform_id
-    upset_df[[paste0("down_", drug)]]       <- ref %in% dn_no$isoform_id
-    upset_df[[paste0("down_", drug, "_OHT")]] <- ref %in% dn_oht$isoform_id
-    upset_df[[paste0("up_int_", drug)]]     <- ref %in% up_int$isoform_id
-    upset_df[[paste0("down_int_", drug)]]   <- ref %in% dn_int$isoform_id
+    upset_df[[paste0("up_", drug)]]                    <- ref %in% up_no$isoform_id
+    upset_df[[paste0("up_", drug, "_OHT")]]            <- ref %in% up_oht$isoform_id
+    upset_df[[paste0("down_", drug)]]                  <- ref %in% dn_no$isoform_id
+    upset_df[[paste0("down_", drug, "_OHT")]]          <- ref %in% dn_oht$isoform_id
+    upset_df[[paste0("up_int_", drug)]]                <- ref %in% up_int$isoform_id
+    upset_df[[paste0("down_int_", drug)]]              <- ref %in% dn_int$isoform_id
     upset_df[[paste0("up_", drug, "_OHT__", drug)]]   <- ref %in% gate_up$isoform_id
     upset_df[[paste0("down_", drug, "_OHT__", drug)]] <- ref %in% gate_dn$isoform_id
     
@@ -215,7 +215,7 @@ for (drug in drugs) {
   category[(U1 & U2 & UI) | (!U1 & U2 & UI)] <- "enhanced_up"
   category[(D1 & D2 & DI) | (!D1 & D2 & DI)] <- "enhanced_down"
   
-  ## Suppressed: drug and drug+OHT significant in same direction; interaction opposite direction
+  ## Suppressed: drug effect reduced under OHT (interaction opposite) or lost significance
   category[(U1 & U2 & DI) | (U1 & !U2 & DI)] <- "suppressed_up"
   category[(D1 & D2 & UI) | (D1 & !D2 & UI)] <- "suppressed_down"
   
@@ -234,13 +234,16 @@ for (drug in drugs) {
   category[ind_down &  DG] <- "shifted_baseline_independent_down"
   
   ## Shifted-baseline reclassification for enhanced/suppressed
-  ## Uses the same category vector, before it is written to df
+  ## enhanced_up:   OHT lowers baseline → drug+OHT < drug → DG
+  ## enhanced_down: OHT raises baseline → drug+OHT > drug → UG
+  ## suppressed_up:   OHT raises baseline → drug+OHT > drug → UG
+  ## suppressed_down: OHT lowers baseline → drug+OHT < drug → DG
   category[category == "enhanced_up"    & DG] <- "shifted_baseline_enhanced_up"
   category[category == "enhanced_down"  & UG] <- "shifted_baseline_enhanced_down"
-  category[category == "suppressed_up"  & DG] <- "shifted_baseline_suppressed_up"
-  category[category == "suppressed_down"& UG] <- "shifted_baseline_suppressed_down"
+  category[category == "suppressed_up"  & UG] <- "shifted_baseline_suppressed_up"
+  category[category == "suppressed_down"& DG] <- "shifted_baseline_suppressed_down"
   
-  ## NOW assign to df
+  ## Assign to df
   df$category <- category
   df2 <- df[!is.na(df$category), , drop = FALSE]
   if (nrow(df2) == 0) next
@@ -295,7 +298,7 @@ for (drug in drugs) {
     indep_df <- df2 %>%
       filter(category %in% c("independent_up","independent_down")) %>%
       transmute(
-        gene_id = strip_version(gene_id),
+        gene_id  = strip_version(gene_id),
         category = category
       ) %>%
       distinct()
