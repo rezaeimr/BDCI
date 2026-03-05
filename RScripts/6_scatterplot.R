@@ -54,11 +54,6 @@ cols_shift <- c(
   shifted_baseline_suppressed_down = "#9467BD"
 )
 
-cols_shift_ind <- c(
-  shifted_baseline_independent_up   = "#E31A1C",
-  shifted_baseline_independent_down = "#1F78B4"
-)
-
 ## Additive: red/blue identical to independent
 cols_add <- c(
   additive_up   = cols_ind[["independent_up"]],
@@ -194,18 +189,16 @@ sy <- safe_num(unlist(lapply(scatter_list, \(d) d$y), use.names = FALSE))
 lim_scatter <- max(abs(c(sx, sy)), na.rm = TRUE)
 scatter_lim <- c(-lim_scatter, lim_scatter)
 
-p_main_list      <- list()
-p_ind_list       <- list()
-p_shift_list     <- list()
-p_shift_ind_list <- list()
+p_main_list  <- list()
+p_ind_list   <- list()
+p_shift_list <- list()
 
 for (drug in drug_list) {
   
   df <- scatter_list[[drug]]
-  df$main      <- "Other"
-  df$ind       <- "Other"
-  df$shift     <- "Other"
-  df$shift_ind <- "Other"
+  df$main  <- "Other"
+  df$ind   <- "Other"
+  df$shift <- "Other"
   
   df$main[df$feature_id %in% load_ids("enhanced_up", drug)]       <- "enhanced_up"
   df$main[df$feature_id %in% load_ids("enhanced_down", drug)]     <- "enhanced_down"
@@ -222,23 +215,17 @@ for (drug in drug_list) {
   df$shift[df$feature_id %in% load_ids("shifted_baseline_suppressed_up", drug)]     <- "shifted_baseline_suppressed_up"
   df$shift[df$feature_id %in% load_ids("shifted_baseline_suppressed_down", drug)]   <- "shifted_baseline_suppressed_down"
   
-  df$shift_ind[df$feature_id %in% load_ids("shifted_baseline_independent_up", drug)]   <- "shifted_baseline_independent_up"
-  df$shift_ind[df$feature_id %in% load_ids("shifted_baseline_independent_down", drug)] <- "shifted_baseline_independent_down"
+  p1 <- plot_xy(df, "x", "y", "main",  cols_main,  drug, axis_x(drug), axis_y(drug), scatter_lim, "Category")
+  p2 <- plot_xy(df, "x", "y", "ind",   cols_ind,   drug, axis_x(drug), axis_y(drug), scatter_lim, "Independent")
+  p3 <- plot_xy(df, "x", "y", "shift", cols_shift, drug, axis_x(drug), axis_y(drug), scatter_lim, "Shifted")
   
-  p1 <- plot_xy(df, "x", "y", "main",      cols_main,      drug, axis_x(drug), axis_y(drug), scatter_lim, "Category")
-  p2 <- plot_xy(df, "x", "y", "ind",       cols_ind,       drug, axis_x(drug), axis_y(drug), scatter_lim, "Independent")
-  p3 <- plot_xy(df, "x", "y", "shift",     cols_shift,     drug, axis_x(drug), axis_y(drug), scatter_lim, "Shifted")
-  p4 <- plot_xy(df, "x", "y", "shift_ind", cols_shift_ind, drug, axis_x(drug), axis_y(drug), scatter_lim, "Shifted Independent")
+  save_both(file.path(fig_out, drug),                        p1 + theme(legend.position = "none"), 6, 6)
+  save_both(file.path(fig_out, paste0(drug, "_independent")), p2 + theme(legend.position = "none"), 6, 6)
+  save_both(file.path(fig_out, paste0(drug, "_shifted")),     p3 + theme(legend.position = "none"), 6, 6)
   
-  save_both(file.path(fig_out, drug),                              p1 + theme(legend.position = "none"), 6, 6)
-  save_both(file.path(fig_out, paste0(drug, "_independent")),       p2 + theme(legend.position = "none"), 6, 6)
-  save_both(file.path(fig_out, paste0(drug, "_shifted")),           p3 + theme(legend.position = "none"), 6, 6)
-  save_both(file.path(fig_out, paste0(drug, "_shifted_independent")),p4 + theme(legend.position = "none"), 6, 6)
-  
-  p_main_list[[drug]]      <- p1
-  p_ind_list[[drug]]       <- p2
-  p_shift_list[[drug]]     <- p3
-  p_shift_ind_list[[drug]] <- p4
+  p_main_list[[drug]]  <- p1
+  p_ind_list[[drug]]   <- p2
+  p_shift_list[[drug]] <- p3
 }
 
 save_both(file.path(fig_out, "ALL_main"),
@@ -247,14 +234,11 @@ save_both(file.path(fig_out, "ALL_independent"),
           wrap_plots(p_ind_list, ncol = 3) & theme(legend.position = "none"), 18, 12)
 save_both(file.path(fig_out, "ALL_shifted"),
           wrap_plots(p_shift_list, ncol = 3) & theme(legend.position = "none"), 18, 12)
-save_both(file.path(fig_out, "ALL_shifted_independent"),
-          wrap_plots(p_shift_ind_list, ncol = 3) & theme(legend.position = "none"), 18, 12)
 
 legend_types <- list(
-  list(p_main_list[[1]],      "Category",            "LEGEND_main"),
-  list(p_ind_list[[1]],       "Independent",         "LEGEND_independent"),
-  list(p_shift_list[[1]],     "Shifted",             "LEGEND_shifted"),
-  list(p_shift_ind_list[[1]], "Shifted Independent", "LEGEND_shifted_independent")
+  list(p_main_list[[1]],  "Category",    "LEGEND_main"),
+  list(p_ind_list[[1]],   "Independent", "LEGEND_independent"),
+  list(p_shift_list[[1]], "Shifted",     "LEGEND_shifted")
 )
 
 for (lg in legend_types) {
@@ -295,21 +279,19 @@ cy <- safe_num(unlist(lapply(corr_list, \(d) d$y), use.names = FALSE))
 lim_corr <- max(abs(c(cx, cy)), na.rm = TRUE)
 corr_lim <- c(-lim_corr, lim_corr)
 
-corr_main_list      <- list()
-corr_ind_list       <- list()
-corr_shift_list     <- list()
-corr_shift_ind_list <- list()
-corr_add_list       <- list()
+corr_main_list  <- list()
+corr_ind_list   <- list()
+corr_shift_list <- list()
+corr_add_list   <- list()
 
 for (drug in drug_list) {
   
   df <- corr_list[[drug]]
   
-  df$main      <- "Other"
-  df$ind       <- "Other"
-  df$shift     <- "Other"
-  df$shift_ind <- "Other"
-  df$add       <- "Other"
+  df$main  <- "Other"
+  df$ind   <- "Other"
+  df$shift <- "Other"
+  df$add   <- "Other"
   
   df$main[df$feature_id %in% load_ids("enhanced_up", drug)]       <- "enhanced_up"
   df$main[df$feature_id %in% load_ids("enhanced_down", drug)]     <- "enhanced_down"
@@ -326,17 +308,13 @@ for (drug in drug_list) {
   df$shift[df$feature_id %in% load_ids("shifted_baseline_suppressed_up", drug)]     <- "shifted_baseline_suppressed_up"
   df$shift[df$feature_id %in% load_ids("shifted_baseline_suppressed_down", drug)]   <- "shifted_baseline_suppressed_down"
   
-  df$shift_ind[df$feature_id %in% load_ids("shifted_baseline_independent_up", drug)]   <- "shifted_baseline_independent_up"
-  df$shift_ind[df$feature_id %in% load_ids("shifted_baseline_independent_down", drug)] <- "shifted_baseline_independent_down"
-  
   df$add[df$feature_id %in% load_ids("additive_up", drug)]   <- "additive_up"
   df$add[df$feature_id %in% load_ids("additive_down", drug)] <- "additive_down"
   
-  p1 <- plot_xy(df, "x", "y", "main",      cols_main,      drug, corr_axis_x(), corr_axis_y(drug), corr_lim, "Category")
-  p2 <- plot_xy(df, "x", "y", "ind",       cols_ind,       drug, corr_axis_x(), corr_axis_y(drug), corr_lim, "Independent")
-  p3 <- plot_xy(df, "x", "y", "shift",     cols_shift,     drug, corr_axis_x(), corr_axis_y(drug), corr_lim, "Shifted")
-  p4 <- plot_xy(df, "x", "y", "shift_ind", cols_shift_ind, drug, corr_axis_x(), corr_axis_y(drug), corr_lim, "Shifted Independent")
-  p5 <- plot_xy(df, "x", "y", "add",       cols_add,       drug, corr_axis_x(), corr_axis_y(drug), corr_lim, "Additive")
+  p1 <- plot_xy(df, "x", "y", "main",  cols_main,  drug, corr_axis_x(), corr_axis_y(drug), corr_lim, "Category")
+  p2 <- plot_xy(df, "x", "y", "ind",   cols_ind,   drug, corr_axis_x(), corr_axis_y(drug), corr_lim, "Independent")
+  p3 <- plot_xy(df, "x", "y", "shift", cols_shift, drug, corr_axis_x(), corr_axis_y(drug), corr_lim, "Shifted")
+  p5 <- plot_xy(df, "x", "y", "add",   cols_add,   drug, corr_axis_x(), corr_axis_y(drug), corr_lim, "Additive")
   
   save_both(file.path(fig_out, paste0("CORR_OHT_", drug)),
             p1 + theme(legend.position = "none"), 6, 6)
@@ -344,16 +322,13 @@ for (drug in drug_list) {
             p2 + theme(legend.position = "none"), 6, 6)
   save_both(file.path(fig_out, paste0("CORR_OHT_", drug, "_shifted")),
             p3 + theme(legend.position = "none"), 6, 6)
-  save_both(file.path(fig_out, paste0("CORR_OHT_", drug, "_shifted_independent")),
-            p4 + theme(legend.position = "none"), 6, 6)
   save_both(file.path(fig_out, paste0("CORR_OHT_", drug, "_additive")),
             p5 + theme(legend.position = "none"), 6, 6)
   
-  corr_main_list[[drug]]      <- p1
-  corr_ind_list[[drug]]       <- p2
-  corr_shift_list[[drug]]     <- p3
-  corr_shift_ind_list[[drug]] <- p4
-  corr_add_list[[drug]]       <- p5
+  corr_main_list[[drug]]  <- p1
+  corr_ind_list[[drug]]   <- p2
+  corr_shift_list[[drug]] <- p3
+  corr_add_list[[drug]]   <- p5
 }
 
 save_both(file.path(fig_out, "CORR_OHT_ALL_main"),
@@ -362,17 +337,14 @@ save_both(file.path(fig_out, "CORR_OHT_ALL_independent"),
           wrap_plots(corr_ind_list, ncol = 3) & theme(legend.position = "none"), 18, 12)
 save_both(file.path(fig_out, "CORR_OHT_ALL_shifted"),
           wrap_plots(corr_shift_list, ncol = 3) & theme(legend.position = "none"), 18, 12)
-save_both(file.path(fig_out, "CORR_OHT_ALL_shifted_independent"),
-          wrap_plots(corr_shift_ind_list, ncol = 3) & theme(legend.position = "none"), 18, 12)
 save_both(file.path(fig_out, "CORR_OHT_ALL_additive"),
           wrap_plots(corr_add_list, ncol = 3) & theme(legend.position = "none"), 18, 12)
 
 corr_legend_types <- list(
-  list(corr_main_list[[1]],      "Category",            "CORR_OHT_LEGEND_main"),
-  list(corr_ind_list[[1]],       "Independent",         "CORR_OHT_LEGEND_independent"),
-  list(corr_shift_list[[1]],     "Shifted",             "CORR_OHT_LEGEND_shifted"),
-  list(corr_shift_ind_list[[1]], "Shifted Independent", "CORR_OHT_LEGEND_shifted_independent"),
-  list(corr_add_list[[1]],       "Additive",            "CORR_OHT_LEGEND_additive")
+  list(corr_main_list[[1]],  "Category",    "CORR_OHT_LEGEND_main"),
+  list(corr_ind_list[[1]],   "Independent", "CORR_OHT_LEGEND_independent"),
+  list(corr_shift_list[[1]], "Shifted",     "CORR_OHT_LEGEND_shifted"),
+  list(corr_add_list[[1]],   "Additive",    "CORR_OHT_LEGEND_additive")
 )
 
 for (lg in corr_legend_types) {

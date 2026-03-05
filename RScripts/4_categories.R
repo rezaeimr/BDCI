@@ -228,10 +228,8 @@ for (drug in drugs) {
   ind_up   <- un & (U1 & U2)
   ind_down <- un & (D1 & D2)
   
-  category[ind_up   & !UG] <- "independent_up"
-  category[ind_down & !DG] <- "independent_down"
-  category[ind_up   &  UG] <- "shifted_baseline_independent_up"
-  category[ind_down &  DG] <- "shifted_baseline_independent_down"
+  category[ind_up]   <- "independent_up"
+  category[ind_down] <- "independent_down"
   
   ## Shifted-baseline reclassification for enhanced/suppressed
   ## enhanced_up:   OHT lowers baseline → drug+OHT < drug → DG
