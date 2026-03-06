@@ -1,6 +1,6 @@
 # BDEA
 
-**Baseline-Dependent Expression Analysis **
+**Baseline-Dependent Expression Analysis**
 
 BaseDepEx is a modular, end-to-end R pipeline for identifying and characterizing genes whose transcriptional response to a drug treatment depends on the activation state of a regulatory factor (e.g., MYC via OHT-inducible system). It combines DESeq2-based differential expression, interaction modeling, functional enrichment, and mechanistic gene categorization at both **gene** and **isoform** resolution.
 
